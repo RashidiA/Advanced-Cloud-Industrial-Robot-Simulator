@@ -1,0 +1,847 @@
+import streamlit as st
+import streamlit.components.v1 as components
+import numpy as np
+import os
+import json
+import base64
+from ikpy.chain import Chain
+from ikpy.link import OriginLink, URDFLink
+
+# --- 1. SYSTEM INITIALIZATION ---
+st.set_page_config(page_title="Multi-Robot OLP Pro-Simulator", layout="wide")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMP_DIR = os.path.join(BASE_DIR, "temp")
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+if 'j_angles' not in st.session_state:
+    st.session_state.j_angles = [0.0] * 8 
+if 'program' not in st.session_state:
+    st.session_state.program = []
+
+# --- 2. MULTI-ROBOT KINEMATICS REGISTRY ---
+ROBOT_REGISTRY = {
+    "ABB_6700": {
+        "links": [
+            {"name": "A1", "trans": [0.0, 0.0, 0.78],   "orient": [0.0, 0.0, 0.0], "rot": [0, 0, 1]},
+            {"name": "A2", "trans": [0.32, 0.0, 0.0],   "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A3", "trans": [0.0, 0.0, 1.1],    "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A4", "trans": [1.142, 0.0, 0.2],  "orient": [0.0, 0.0, 0.0], "rot": [1, 0, 0]},
+            {"name": "A5", "trans": [0.2, 0.0, 0.0],    "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A6", "trans": [0.2, 0.0, 0.0],    "orient": [0.0, 0.0, 0.0], "rot": [1, 0, 0]},
+        ],
+        "fallback_heights": [0.78, 0.5, 1.28, 0.4, 0.2, 0.2, 0.1],
+        "limits": [
+            [-np.pi, np.pi],               # A1: ±180°
+            [-1.047, 1.483],               # A2: -60° to +85°
+            [-1.3962, 1.3962],             # A3: ADJUSTED TO -80° TO +80° ONLY
+            [-6.108, 6.108],               # A4: ±350°
+            [-2.181, 2.181],               # A5: ±125°
+            [-6.108, 6.108],               # A6: ±350°
+            [-np.pi, np.pi]                # E1: ±180°
+        ]
+    },
+    "ABB_4400": {
+        "links": [
+            {"name": "A1", "trans": [0.0, 0.0, 0.0],    "orient": [0.0, 0.0, 0.0], "rot": [0, 0, 1]},
+            {"name": "A2", "trans": [0.20, 0.0, 0.6],   "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A3", "trans": [0.0, 0.0, 0.88],   "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A4", "trans": [2.15, 0.0, 0.15],  "orient": [0.0, 0.0, 0.0], "rot": [1, 0, 0]},
+            {"name": "A5", "trans": [-1.0, 0.0, 0.0],   "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A6", "trans": [0.14, 0.0, 0.0],   "orient": [0.0, 0.0, 0.0], "rot": [1, 0, 0]},
+        ],
+        "fallback_heights": [0.68, 0.4, 0.88, 0.3, 0.15, 0.15, 0.08],
+        "limits": [
+            [-np.pi, np.pi], 
+            [-1.221, 1.658], 
+            [-1.3962, 1.3962], 
+            [-5.235, 5.235], 
+            [-2.094, 2.094], 
+            [-6.981, 6.981], 
+            [-np.pi, np.pi]
+        ]
+    },
+    "ABB_6600": {
+        "links": [
+            {"name": "A1", "trans": [0.0, 0.0, 0.22],   "orient": [0.0, 0.0, 0.0], "rot": [0, 0, 1]},
+            {"name": "A2", "trans": [0.30, 0.0, 0.5],   "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A3", "trans": [0.0, -0.2, 1.145], "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A4", "trans": [1.145, 0.2, 0.20], "orient": [0.0, 0.0, 0.0], "rot": [1, 0, 0]},
+            {"name": "A5", "trans": [0.65, 0.0, 0.0],   "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A6", "trans": [0.18, 0.0, 0.0],   "orient": [0.0, 0.0, 0.0], "rot": [1, 0, 0]},
+        ],
+        "fallback_heights": [0.715, 0.45, 1.145, 0.38, 0.2, 0.2, 0.1],
+        "limits": [
+            [-np.pi, np.pi], 
+            [-1.134, 1.483], 
+            [-1.3962, 1.3962], 
+            [-5.235, 5.235], 
+            [-2.094, 2.094], 
+            [-5.235, 5.235], 
+            [-np.pi, np.pi]
+        ]
+    },
+    "KUKA_KR150": {
+        "links": [
+            {"name": "A1", "trans": [0.0, 0.0, 0.55],   "orient": [0.0, 0.0, 0.0], "rot": [0, 0, 1]},
+            {"name": "A2", "trans": [0.35, 0.0, 0.0],   "orient": [0.0, -1.5708, 0.0], "rot": [0, 1, 0]},
+            {"name": "A3", "trans": [1.3, 0.0, -0.05],  "orient": [0.0, 1.5708, 0.0], "rot": [0, 1, 0]},
+            {"name": "A4", "trans": [2.40, 0.0, 0.1],   "orient": [0.0, 0.0, 0.0], "rot": [1, 0, 0]},
+            {"name": "A5", "trans": [-1.0, 0.0, 0.0],   "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A6", "trans": [0.21, 0.0, 0.0],   "orient": [0.0, 0.0, 0.0], "rot": [1, 0, 0]},
+        ],
+        "fallback_heights": [0.75, 0.5, 1.25, 0.35, 0.23, 0.21, 0.09],
+        "limits": [
+            [-3.228, 3.228], 
+            [-0.785, 1.483], 
+            [-1.3962, 1.3962], 
+            [-6.108, 6.108], 
+            [-2.181, 2.181], 
+            [-6.108, 6.108], 
+            [-np.pi, np.pi]
+        ]
+    },
+    "Yaskawa_3500": {
+        "links": [
+            {"name": "A1", "trans": [0.0, 0.0, 0.50],   "orient": [0.0, 0.0, 0.0], "rot": [0, 0, 1]},
+            {"name": "A2", "trans": [0.16, 0.0, 0.0],   "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A3", "trans": [0.0, 0.0, 0.9],    "orient": [0.0, 0.0, 0.0], "rot": [0, 1, 0]},
+            {"name": "A4", "trans": [0.0, 0.0, 0.21],   "orient": [0.0, 0.0, 0.0], "rot": [1, 0, 0]},
+            {"name": "A5", "trans": [1.0, 0.0, 0.0],    "orient": [0.0, -1.5708, 0.0], "rot": [0, 1, 0]},
+            {"name": "A6", "trans": [0.0, 0.0, -0.17],  "orient": [0.0, 0.0, 0.0], "rot": [1, 0, 0]},
+        ],
+        "fallback_heights": [0.70, 0.45, 1.15, 0.35, 0.18, 0.18, 0.10],
+        "limits": [
+            [-3.141, 3.141], 
+            [-1.570, 1.308], 
+            [-1.3962, 1.3962], 
+            [-3.141, 3.141], 
+            [-2.268, 2.268], 
+            [-6.283, 6.283], 
+            [-np.pi, np.pi]
+        ]
+    }
+}
+
+# --- 3. SELECTION INITIALIZATION LAYER ---
+with st.sidebar:
+    st.title("📟 Simulation Setup")
+    with st.expander("🛠️ Layout Setup", expanded=True):
+        robot_folder_path = os.path.join(BASE_DIR, "assets", "robots")
+        available_profiles = list(ROBOT_REGISTRY.keys())
+        
+        if os.path.exists(robot_folder_path):
+            scanned_folders = [f for f in os.listdir(robot_folder_path) if os.path.isdir(os.path.join(robot_folder_path, f))]
+            if scanned_folders:
+                available_profiles = sorted(list(set(scanned_folders + available_profiles)))
+
+        selected_profile = st.selectbox(
+            "Select Active Hardware Profile", 
+            options=available_profiles,
+            key="robot_profile_selection"
+        )
+
+active_cfg = ROBOT_REGISTRY.get(selected_profile, ROBOT_REGISTRY["ABB_6700"])
+
+# --- 4. CONFIGURATION ADJUSTED KINEMATICS ENGINE ---
+@st.cache_resource
+def build_robot_chain(profile_name, hardware_config):
+    links_data = hardware_config["links"]
+    return Chain(name=profile_name, links=[
+        OriginLink(),
+        URDFLink(name=links_data[0]["name"], origin_translation=links_data[0]["trans"], origin_orientation=links_data[0]["orient"], rotation=links_data[0]["rot"]),
+        URDFLink(name=links_data[1]["name"], origin_translation=links_data[1]["trans"], origin_orientation=links_data[1]["orient"], rotation=links_data[1]["rot"]),
+        URDFLink(name=links_data[2]["name"], origin_translation=links_data[2]["trans"], origin_orientation=links_data[2]["orient"], rotation=links_data[2]["rot"]),
+        URDFLink(name=links_data[3]["name"], origin_translation=links_data[3]["trans"], origin_orientation=links_data[3]["orient"], rotation=links_data[3]["rot"]),
+        URDFLink(name=links_data[4]["name"], origin_translation=links_data[4]["trans"], origin_orientation=links_data[4]["orient"], rotation=links_data[4]["rot"]),
+        URDFLink(name=links_data[5]["name"], origin_translation=links_data[5]["trans"], origin_orientation=links_data[5]["orient"], rotation=links_data[5]["rot"]),
+    ], active_links_mask=[False, True, True, True, True, True, True])
+
+robot_chain = build_robot_chain(selected_profile, active_cfg)
+
+@st.cache_data(show_spinner=False)
+def get_file_base64_cached(filepath, file_hash=""):
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "rb") as f:
+                return base64.b64encode(f.read()).decode('utf-8')
+        except Exception:
+            return ""
+    return ""
+
+def get_file_hash(filepath):
+    if os.path.exists(filepath):
+        return str(os.path.getmtime(filepath))
+    return ""
+
+# --- 5. EVENT PARAMETER INTERCEPT LAYER ---
+query_params = st.query_params
+if "event" in query_params:
+    event_type = query_params.get("event")
+    if event_type == "sync_sequence":
+        try:
+            raw_program = json.loads(query_params.get("program_data", "[]"))
+            st.session_state.program = raw_program
+            if len(raw_program) > 0:
+                st.session_state.j_angles = raw_program[-1]["angles"]
+        except Exception as e:
+            st.error(f"Pendant sync failure: {e}")
+    elif event_type == "clear_sequence":
+        st.session_state.program = []
+        st.session_state.j_angles = [0.0] * 8
+    st.query_params.clear()
+
+# --- 6. OPERATOR INTERFACE CONTROLS ---
+with st.sidebar:
+    with st.expander("🛠️ Layout Setup", expanded=False):
+        if st.button("🔴 RESET TOOL & JIG", use_container_width=True):
+            for f in [os.path.join(TEMP_DIR, "gun.stl"), os.path.join(TEMP_DIR, "jig.stl")]:
+                if os.path.exists(f):
+                    try: os.remove(f)
+                    except: pass
+            st.session_state.program = []
+            st.session_state.j_angles = [0.0] * 8
+            st.cache_data.clear()      
+            st.cache_resource.clear()  
+            st.query_params.clear()
+            st.rerun()
+            
+        st.divider()
+        st.write("**🏗️ Rotary Positioning Jig**")
+        up_jig = st.file_uploader("Upload Jig STL", type=["stl"], key="jig_up")
+        if up_jig:
+            with open(os.path.join(TEMP_DIR, "jig.stl"), "wb") as f: 
+                f.write(up_jig.getbuffer())
+            st.cache_data.clear()
+            
+        jx_pos = st.number_input("Jig Base X Location", value=1.6, step=0.1)
+        jy_pos = st.number_input("Jig Base Y Location", value=0.0, step=0.1)
+        jz_pos = st.number_input("Jig Base Z Elevation Level", value=0.55, step=0.01, format="%.3f")
+        
+        st.write("**📐 CAD Vector Calibration**")
+        j_rot_x = st.slider("CAD Rotate X Axis", -180, 180, 0, step=90)
+        j_rot_y = st.slider("CAD Rotate Y Axis", -180, 180, 0, step=90)
+        js_scale = st.number_input("Jig Geometry Scale", value=0.001, format="%.5f")
+
+    # --- 6B. END-EFFECTOR TOOLING LIBRARY ---
+    with st.expander("⚙️ End-Effector Tooling Library", expanded=True):
+        tool_source = st.radio("Tooling Model Source", options=["Internal Library", "External STL Upload"])
+        selected_tool_path = None
+
+        if tool_source == "Internal Library":
+            CATEGORY_MAPPING = {
+                "Welding Guns": "welding_guns",
+                "Grippers": "grippers",
+                "Welding Torches": "welding_torches"
+            }
+            selected_category = st.selectbox("Select Tool Category Type", options=list(CATEGORY_MAPPING.keys()))
+            folder_target_name = CATEGORY_MAPPING[selected_category]
+            library_scan_path = os.path.join(BASE_DIR, "assets", "robot_tools", folder_target_name)
+            
+            available_tools = []
+            if os.path.exists(library_scan_path):
+                available_tools = [f for f in os.listdir(library_scan_path) if f.lower().endswith('.stl')]
+                
+            if available_tools:
+                selected_tool_file = st.selectbox("Select Tooling Model", options=available_tools)
+                selected_tool_path = os.path.join(library_scan_path, selected_tool_file)
+            else:
+                st.caption("⚠️ No internal library templates found. Please upload an external file.")
+        else:
+            up_gun = st.file_uploader("Upload Custom External Tool STL", type=["stl"], key="gun_up")
+            if up_gun:
+                selected_tool_path = os.path.join(TEMP_DIR, "gun.stl")
+                with open(selected_tool_path, "wb") as f: 
+                    f.write(up_gun.getbuffer())
+                st.cache_data.clear()
+
+        st.divider()
+        st.write("**📐 6-Axis Tool Center Point (TCP) Offsets**")
+        col_ox, col_oy, col_oz = st.columns(3)
+        with col_ox: t_off_x = st.number_input("Offset X", value=0.00, step=0.05, format="%.2f")
+        with col_oy: t_off_y = st.number_input("Offset Y", value=0.00, step=0.05, format="%.2f")
+        with col_oz: t_off_z = st.number_input("Offset Z", value=0.00, step=0.05, format="%.2f")
+        
+        st.write("**🔄 Tool Mounting Matrix Rotations (Degrees)**")
+        t_rot_x = st.slider("Rotate X Axis (Roll)", -180, 180, 0, step=5)
+        t_rot_y = st.slider("Rotate Y Axis (Pitch)", -180, 180, 0, step=5)
+        t_rot_z = st.slider("Rotate Z Axis (Yaw)", -180, 180, 0, step=5)
+
+if 'jx_pos' not in locals(): jx_pos = 1.6
+if 'jy_pos' not in locals(): jy_pos = 0.0
+if 'jz_pos' not in locals(): jz_pos = 0.55
+if 'j_rot_x' not in locals(): j_rot_x = 0
+if 'j_rot_y' not in locals(): j_rot_y = 0
+if 'js_scale' not in locals(): js_scale = 0.001
+
+# --- 7. VIRTUAL WEBGL SIMULATOR VIEWPORT ---
+def build_embedded_viewport(payload):
+    json_stream = json.dumps(payload)
+    
+    html_source = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
+        
+        <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+        <style>
+            body { margin: 0; background-color: #111111; overflow: hidden; font-family: sans-serif; user-select: none; }
+            #canvas-container { width: 100vw; height: 100vh; position: absolute; top:0; left:0; z-index:1; }
+            #status { position: absolute; top: 10px; left: 10px; color: #ffffff; font-size: 13px; background: rgba(20,20,20,0.8); padding: 6px 12px; border-radius:4px; border: 1px solid #333; z-index: 10; }
+            #jog-pendant { position: absolute; top: 10px; right: 10px; background: rgba(20, 20, 20, 0.85); border: 1px solid #ff9800; border-radius: 6px; width: 220px; padding: 10px; color: white; z-index: 10; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+            .pendant-title { font-size: 11px; font-weight: bold; text-transform: uppercase; color: #ff9800; letter-spacing: 1px; border-bottom: 1px solid #333; padding-bottom: 4px; margin-bottom: 8px; text-align: center; }
+            
+            .mode-container { display: flex; gap: 4px; margin-bottom: 8px; }
+            .mode-btn { flex: 1; background: #222; border: 1px solid #444; color: #aaa; padding: 5px; font-size: 10px; font-weight: bold; cursor: pointer; border-radius: 4px; text-transform: uppercase; }
+            .mode-btn.active { background: #ff9800; color: black; border-color: #ff9800; }
+            
+            .jog-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+            .jog-label { font-size: 12px; font-weight: bold; font-family: monospace; color: #bbb; }
+            .jog-btn { background: #222; border: 1px solid #444; color: white; width: 45px; height: 26px; font-size: 14px; font-weight: bold; cursor: pointer; border-radius: 4px; transition: all 0.1s; }
+            .jog-btn:active { background: #ff9800; color: black; border-color: #ff9800; }
+            .val-display { font-family: monospace; font-size: 11px; color: #00ffcc; width: 60px; text-align: center; }
+            .action-block { margin-top: 10px; border-top: 1px solid #333; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+            .btn-action { width: 100%; border: none; font-weight: bold; height: 32px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); transition: background 0.1s; }
+            #btn-save-step { background: #ff9800; color: black; }
+            #btn-run-sim { background: #4caf50; color: white; }
+            #btn-clear-seq { background: #f44336; color: white; }
+            .step-counter { font-size: 12px; font-family: monospace; text-align: center; color: #aaa; margin-top: 2px; }
+            
+            #tcp-monitor { background: rgba(0,0,0,0.4); padding: 6px; border-radius: 4px; font-size: 11px; font-family: monospace; margin-bottom: 8px; display: none; }
+            .tcp-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; text-align: center; margin-top: 4px; font-weight: bold; }
+            
+            /* Hidden/Floating Video feedback window */
+            #webcam-feedback { position: absolute; bottom: 10px; left: 10px; width: 160px; height: 120px; border: 2px solid #ff9800; border-radius: 4px; z-index: 10; display: none; transform: scaleX(-1); }
+        </style>
+    </head>
+    <body>
+        <div id="status">WebGL Processing...</div>
+        <video id="webcam-feedback" autoplay playsinline></video>
+
+        <div id="jog-pendant">
+            <div class="pendant-title">⚡ INSTANT JOG PENDANT</div>
+            <div class="mode-container">
+                <button id="mode-joint" class="mode-btn active">Joint</button>
+                <button id="mode-tcp" class="mode-btn">⌖ TCP</button>
+                <button id="mode-gesture" class="mode-btn">✋ Gesture</button>
+            </div>
+            <div id="tcp-monitor">
+                <div style="color: #00ffcc; font-size: 10px; text-align:center;">TCP LIVE MONITOR (METERS)</div>
+                <div class="tcp-grid">
+                    <span style="color:#ff4444">X:<span id="lbl-tx">0.00</span></span>
+                    <span style="color:#44ff44">Y:<span id="lbl-ty">0.00</span></span>
+                    <span style="color:#4444ff">Z:<span id="lbl-tz">0.00</span></span>
+                </div>
+            </div>
+            <div id="joint-jog-container"></div>
+            <div class="action-block">
+                <div class="jog-row" style="margin-bottom: 4px;">
+                    <div class="jog-label" style="font-size: 11px; color: #aaa;">SPEED</div>
+                    <input type="range" id="sld-speed" min="5" max="100" value="50" step="5" style="flex-grow: 1; margin: 0 10px; accent-color: #ff9800;">
+                    <div class="val-display" id="val-speed" style="width: 35px; color: #ff9800; font-weight: bold;">50%</div>
+                </div>
+                <button class="btn-action" id="btn-save-step">💾 RECORD STEP POSITION</button>
+                <button class="btn-action" id="btn-run-sim">▶️ RUN SIMULATION</button>
+                <button class="btn-action" id="btn-clear-seq">🗑️ CLEAR SEQUENCE</button>
+                <div class="step-counter" id="lbl-steps">Steps: 0</div>
+            </div>
+        </div>
+
+        <div id="canvas-container"></div>
+
+        <script>
+            const data = __PAYLOAD_OBJECT__;
+            const dh = data.dhConfig;
+            const limitsConfig = data.jointLimits;
+
+            let localJointAngles = [...data.initialAngles];
+            let lastComputedTransforms = [];
+            let embeddedTrajectory = [...data.trajectory];
+            let activeJogMode = "joint";
+            
+            const J_STEP = 5 * (Math.PI / 180);
+
+            THREE.Object3D.DefaultUp.set(0, 0, 1);
+            const container = document.getElementById('canvas-container');
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111111);
+
+            const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.01, 100);
+            camera.position.set(4.0, -4.0, 3.0);
+
+            const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            container.appendChild(renderer.domElement);
+
+            const controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.target.set(0.8, 0, 0.8);
+
+            scene.add(new THREE.AmbientLight(0x777777));
+            const light1 = new THREE.DirectionalLight(0xffffff, 0.9); light1.position.set(5, 5, 10); scene.add(light1);
+            const light2 = new THREE.DirectionalLight(0xffffff, 0.4); light2.position.set(-5, -5, 5); scene.add(light2);
+
+            const grid = new THREE.GridHelper(15, 30, 0x555555, 0x252525);
+            grid.rotation.x = Math.PI / 2;
+            scene.add(grid);
+
+            const loader = new THREE.STLLoader();
+            const links = [];
+            
+            let gunMesh = new THREE.Group();
+            let jigMesh = new THREE.Group();
+            let internalJigContent = new THREE.Group();
+            
+            scene.add(gunMesh);
+            jigMesh.add(internalJigContent);
+            scene.add(jigMesh);
+
+            const tcpAnchorPivot = new THREE.Object3D();
+            scene.add(tcpAnchorPivot);
+
+            const transformGizmo = new THREE.TransformControls(camera, renderer.domElement);
+            transformGizmo.size = 0.65;
+            transformGizmo.setMode("translate");
+            transformGizmo.attach(tcpAnchorPivot);
+            transformGizmo.visible = false;
+            transformGizmo.enabled = false;
+            scene.add(transformGizmo);
+
+            transformGizmo.addEventListener('dragging-changed', function (e) {
+                controls.enabled = !e.value;
+            });
+
+            transformGizmo.addEventListener('objectChange', function () {
+                if ((activeJogMode !== "tcp" && activeJogMode !== "gesture") || runSimulation) return;
+                executeCyclicInverseKinematics(tcpAnchorPivot.position);
+            });
+
+            function base64ToArrayBuffer(base64Str) {
+                const binaryString = window.atob(base64Str);
+                const len = binaryString.length;
+                const bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) { bytes[i] = binaryString.charCodeAt(i); }
+                return bytes.buffer;
+            }
+
+            let targetColor = 0xcccccc; 
+            if (data.profileName === "Yaskawa_3500") { targetColor = 0x0055ff; } 
+            else if (data.profileName === "KUKA_KR150") { targetColor = 0xff6600; }
+
+            for(let i=0; i<7; i++) {
+                let mesh;
+                let currentLinkColor = (i === 0) ? 0x222222 : targetColor;
+
+                if(data.linkGeometries && data.linkGeometries[i] && data.linkGeometries[i].length > 0) {
+                    const geometry = loader.parse(base64ToArrayBuffer(data.linkGeometries[i]));
+                    const material = new THREE.MeshStandardMaterial({ color: currentLinkColor, roughness: 0.4 });
+                    mesh = new THREE.Mesh(geometry, material);
+                } else {
+                    const h = data.fallbackHeights[i];
+                    const geometry = new THREE.CylinderGeometry(0.18, 0.22, h, 24);
+                    geometry.rotateX(Math.PI / 2); 
+                    if(i === 1 || i === 2 || i === 3) { geometry.translate(0, 0, h / 2); }
+                    mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: currentLinkColor, roughness: 0.4 }));
+                }
+                scene.add(mesh);
+                links.push(mesh);
+            }
+
+            let toolAdjustmentGroup = new THREE.Group();
+            gunMesh.add(toolAdjustmentGroup);
+
+            if(data.gunData && data.gunData.length > 0) {
+                const geometry = loader.parse(base64ToArrayBuffer(data.gunData));
+                geometry.center(); 
+                const gunInternalMesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 }));
+                gunInternalMesh.scale.set(0.001, 0.001, 0.001); 
+                toolAdjustmentGroup.add(gunInternalMesh);
+            }
+
+            if(data.jigData && data.jigData.length > 0) {
+                const geometry = loader.parse(base64ToArrayBuffer(data.jigData));
+                geometry.center(); 
+                const m = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.6 }));
+                m.scale.set(data.jigScale, data.jigScale, data.jigScale);
+                m.rotation.x = data.rotX;
+                m.rotation.y = data.rotY;
+                internalJigContent.add(m);
+            }
+
+            function getLinkStructureBaseMatrix(linkData) {
+                let mTrans = new THREE.Matrix4().makeTranslation(linkData.trans[0], linkData.trans[1], linkData.trans[2]);
+                let mOrient = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(linkData.orient[0], linkData.orient[1], linkData.orient[2], 'XYZ'));
+                return mTrans.multiply(mOrient);
+            }
+
+            function computeForwardKinematics(angles) {
+                const computedTransforms = [];
+                let currentMatrix = new THREE.Matrix4();
+                computedTransforms.push({ pos: new THREE.Vector3(0,0,0).toArray(), quat: new THREE.Quaternion().toArray() });
+
+                let m1 = getLinkStructureBaseMatrix(dh[0]).multiply(new THREE.Matrix4().makeRotationZ(angles[1]));
+                currentMatrix.multiply(m1);
+                computedTransforms.push({ pos: new THREE.Vector3().setFromMatrixPosition(currentMatrix).toArray(), quat: new THREE.Quaternion().setFromRotationMatrix(currentMatrix).toArray() });
+
+                let m2 = getLinkStructureBaseMatrix(dh[1]).multiply(new THREE.Matrix4().makeRotationY(angles[2]));
+                currentMatrix.multiply(m2);
+                computedTransforms.push({ pos: new THREE.Vector3().setFromMatrixPosition(currentMatrix).toArray(), quat: new THREE.Quaternion().setFromRotationMatrix(currentMatrix).toArray() });
+
+                let m2_adj = getLinkStructureBaseMatrix(dh[2]).multiply(new THREE.Matrix4().makeRotationY(angles[3]));
+                currentMatrix.multiply(m2_adj);
+                computedTransforms.push({ pos: new THREE.Vector3().setFromMatrixPosition(currentMatrix).toArray(), quat: new THREE.Quaternion().setFromRotationMatrix(currentMatrix).toArray() });
+
+                let m4 = getLinkStructureBaseMatrix(dh[3]).multiply(new THREE.Matrix4().makeRotationX(angles[4]));
+                currentMatrix.multiply(m4);
+                
+                if (data.profileName === "Yaskawa_3500") {
+                    computedTransforms.push({ pos: new THREE.Vector3().setFromMatrixPosition(currentMatrix).toArray(), quat: new THREE.Quaternion().setFromRotationMatrix(currentMatrix).toArray() });
+                } else {
+                    let correctionMatrix = currentMatrix.clone();
+                    let directionVector = new THREE.Vector3(1, 0, 0).applyQuaternion(new THREE.Quaternion().setFromRotationMatrix(correctionMatrix));
+                    let fixedPos = new THREE.Vector3().setFromMatrixPosition(correctionMatrix).add(directionVector.multiplyScalar(-1.0));
+                    computedTransforms.push({ pos: fixedPos.toArray(), quat: new THREE.Quaternion().setFromRotationMatrix(currentMatrix).toArray() });
+                }
+
+                let m5 = getLinkStructureBaseMatrix(dh[4]).multiply(new THREE.Matrix4().makeRotationY(angles[5]));
+                currentMatrix.multiply(m5);
+                computedTransforms.push({ pos: new THREE.Vector3().setFromMatrixPosition(currentMatrix).toArray(), quat: new THREE.Quaternion().setFromRotationMatrix(currentMatrix).toArray() });
+
+                let m6 = getLinkStructureBaseMatrix(dh[5]);
+                if (data.profileName === "Yaskawa_3500") { m6.multiply(new THREE.Matrix4().makeRotationZ(angles[6])); }
+                else { m6.multiply(new THREE.Matrix4().makeRotationX(angles[6])); }
+                currentMatrix.multiply(m6);
+                computedTransforms.push({ pos: new THREE.Vector3().setFromMatrixPosition(currentMatrix).toArray(), quat: new THREE.Quaternion().setFromRotationMatrix(currentMatrix).toArray() });
+
+                return computedTransforms;
+            }
+
+            function executeCyclicInverseKinematics(targetGlobalPos) {
+                for (let iteration = 0; iteration < 12; iteration++) {
+                    let currentTransforms = computeForwardKinematics(localJointAngles);
+                    let endEffectorPos = new THREE.Vector3().fromArray(currentTransforms[6].pos);
+                    let errorDistance = new THREE.Vector3().copy(targetGlobalPos).sub(endEffectorPos);
+                    if (errorDistance.length() < 0.0002) break;
+
+                    for (let j = 1; j <= 6; j++) {
+                        let jointPosition = new THREE.Vector3().fromArray(currentTransforms[j-1].pos);
+                        let axisVectorDirection = new THREE.Vector3(0, 0, 1);
+                        if (j === 2 || j === 3 || j === 5) axisVectorDirection.set(0, 1, 0);
+                        if (j === 4 || (j === 6 && data.profileName !== "Yaskawa_3500")) axisVectorDirection.set(1, 0, 0);
+
+                        let componentToEE = new THREE.Vector3().subVectors(endEffectorPos, jointPosition).normalize();
+                        let componentToTarget = new THREE.Vector3().subVectors(targetGlobalPos, jointPosition).normalize();
+
+                        let angleScalarDot = componentToEE.dot(componentToTarget);
+                        let localizedDeltaTheta = Math.acos(Math.max(-1, Math.min(1, angleScalarDot))) * 0.12;
+                        
+                        if (localizedDeltaTheta > 0.0001) {
+                            let directionalCross = new THREE.Vector3().crossVectors(componentToEE, componentToTarget);
+                            if (directionalCross.dot(axisVectorDirection) < 0) { localJointAngles[j] -= localizedDeltaTheta; }
+                            else { localJointAngles[j] += localizedDeltaTheta; }
+                            localJointAngles[j] = Math.max(limitsConfig[j-1][0], Math.min(limitsConfig[j-1][1], localJointAngles[j]));
+                        }
+                    }
+                }
+                refreshSceneDisplay(false);
+                updateMonitorHUDText(targetGlobalPos);
+            }
+
+            function refreshSceneDisplay(updateGizmoPosition = true) {
+                lastComputedTransforms = computeForwardKinematics(localJointAngles);
+                for(let i=0; i<7; i++) {
+                    if(links[i] && lastComputedTransforms[i]) {
+                        links[i].position.fromArray(lastComputedTransforms[i].pos);
+                        links[i].quaternion.fromArray(lastComputedTransforms[i].quat);
+                    }
+                }
+                if(links[6]) {
+                    links[6].updateMatrixWorld(); gunMesh.position.copy(links[6].position); gunMesh.quaternion.copy(links[6].quaternion);
+                    gunMesh.translateX(data.toolOffsetX); gunMesh.translateY(data.toolOffsetY); gunMesh.translateZ(data.toolOffsetZ);
+                    toolAdjustmentGroup.rotation.set(data.toolRotX, data.toolRotY, data.toolRotZ, 'XYZ');
+
+                    if (updateGizmoPosition || runSimulation) {
+                        tcpAnchorPivot.position.copy(links[6].position);
+                        tcpAnchorPivot.quaternion.copy(links[6].quaternion);
+                        transformGizmo.updateMatrixWorld();
+                        updateMonitorHUDText(tcpAnchorPivot.position);
+                    }
+                }
+                jigMesh.position.set(data.jigX, data.jigY, data.jigZ);
+                internalJigContent.rotation.z = localJointAngles[7];
+
+                for(let i=1; i<=7; i++) {
+                    let displayElement = document.getElementById(`val-${i}`);
+                    if (displayElement) { displayElement.innerText = `${(localJointAngles[i] * (180 / Math.PI)).toFixed(1)}°`; }
+                }
+            }
+
+            function updateMonitorHUDText(vectorPos) {
+                document.getElementById("lbl-tx").innerText = vectorPos.x.toFixed(2);
+                document.getElementById("lbl-ty").innerText = vectorPos.y.toFixed(2);
+                document.getElementById("lbl-tz").innerText = vectorPos.z.toFixed(2);
+            }
+
+            const btnJoint = document.getElementById("mode-joint");
+            const btnTCP = document.getElementById("mode-tcp");
+            const btnGesture = document.getElementById("mode-gesture");
+            const rowsWrap = document.getElementById("joint-jog-container");
+            const hudMonitor = document.getElementById("tcp-monitor");
+            const videoElement = document.getElementById("webcam-feedback");
+
+            btnJoint.addEventListener("click", () => {
+                activeJogMode = "joint"; 
+                btnJoint.classList.add("active"); btnTCP.classList.remove("active"); btnGesture.classList.remove("active");
+                rowsWrap.style.display = "block"; hudMonitor.style.display = "none"; videoElement.style.display = "none";
+                transformGizmo.visible = false; transformGizmo.enabled = false;
+                stopWebcam();
+            });
+
+            btnTCP.addEventListener("click", () => {
+                activeJogMode = "tcp"; 
+                btnTCP.classList.add("active"); btnJoint.classList.remove("active"); btnGesture.classList.remove("active");
+                rowsWrap.style.display = "none"; hudMonitor.style.display = "block"; videoElement.style.display = "none";
+                transformGizmo.visible = true; transformGizmo.enabled = true; refreshSceneDisplay(true);
+                stopWebcam();
+            });
+
+            btnGesture.addEventListener("click", () => {
+                activeJogMode = "gesture";
+                btnGesture.classList.add("active"); btnJoint.classList.remove("active"); btnTCP.classList.remove("active");
+                rowsWrap.style.display = "none"; hudMonitor.style.display = "block"; videoElement.style.display = "block";
+                transformGizmo.visible = true; transformGizmo.enabled = true; refreshSceneDisplay(true);
+                startWebcam();
+            });
+
+            const rowsContainer = document.getElementById('joint-jog-container');
+            for(let i=1; i<=6; i++) {
+                const row = document.createElement('div');
+                row.className = 'jog-row';
+                row.innerHTML = `<button class="jog-btn" id="btn-m-${i}">-</button><div class="jog-label">A${i}</div><div class="val-display" id="val-${i}">0.0°</div><button class="jog-btn" id="btn-p-${i}">+</button>`;
+                rowsContainer.appendChild(row);
+                (function(idx) {
+                    document.getElementById(`btn-m-${idx}`).addEventListener('click', () => jogJoint(idx, -1));
+                    document.getElementById(`btn-p-${idx}`).addEventListener('click', () => jogJoint(idx, 1));
+                })(i);
+            }
+            
+            const e1Row = document.createElement('div');
+            e1Row.className = 'jog-row'; e1Row.style.marginTop = '10px'; e1Row.style.borderTop = '1px solid #333'; e1Row.style.paddingTop = '8px';
+            e1Row.innerHTML = `<button class="jog-btn" id="btn-m-7">-</button><div class="jog-label" style="color:#ff9800;">E1</div><div class="val-display" id="val-7">0.0°</div><button class="jog-btn" id="btn-p-7">+</button>`;
+            rowsContainer.appendChild(e1Row);
+            document.getElementById('btn-m-7').addEventListener('click', () => jogJoint(7, -1));
+            document.getElementById('btn-p-7').addEventListener('click', () => jogJoint(7, 1));
+
+            function jogJoint(jointIdx, direction) {
+                if(runSimulation) return;
+                let nextAngle = localJointAngles[jointIdx] + (direction * J_STEP);
+                if (nextAngle >= limitsConfig[jointIdx-1][0] && nextAngle <= limitsConfig[jointIdx-1][1]) {
+                    localJointAngles[jointIdx] = nextAngle;
+                    refreshSceneDisplay(true);
+                }
+            }
+
+            function updateUIElements() { document.getElementById('lbl-steps').innerText = "Steps: " + embeddedTrajectory.length; }
+            document.getElementById('sld-speed').addEventListener('input', (e) => { document.getElementById('val-speed').innerText = e.target.value + "%"; });
+
+            document.getElementById('btn-save-step').addEventListener('click', () => {
+                if(runSimulation) return;
+                lastComputedTransforms = computeForwardKinematics(localJointAngles);
+                embeddedTrajectory.push({ angles: [...localJointAngles], transforms: JSON.parse(JSON.stringify(lastComputedTransforms)) });
+                updateUIElements();
+                const targetUrl = new URL(window.parent.location.href);
+                targetUrl.searchParams.set("event", "sync_sequence");
+                targetUrl.searchParams.set("program_data", JSON.stringify(embeddedTrajectory));
+                window.parent.history.replaceState({}, '', targetUrl.toString());
+            });
+
+            document.getElementById('btn-run-sim').addEventListener('click', () => {
+                if(embeddedTrajectory.length < 2) { alert("Please record at least 2 structural step points."); return; }
+                simStepIndex = 0; interpolationFraction = 0; runSimulation = true;
+            });
+
+            document.getElementById('btn-clear-seq').addEventListener('click', () => {
+                embeddedTrajectory = []; updateUIElements();
+                const targetUrl = new URL(window.parent.location.href);
+                targetUrl.searchParams.set("event", "clear_sequence");
+                window.parent.location.href = targetUrl.toString();
+            });
+
+            let simStepIndex = 0; let interpolationFraction = 0; let runSimulation = false;
+
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+
+                if (runSimulation && embeddedTrajectory.length >= 2) {
+                    document.getElementById('jog-pendant').style.opacity = "0.3"; 
+                    document.getElementById('status').innerText = "Status: Running Sequence Simulation";
+                    let currentPoint = embeddedTrajectory[simStepIndex];
+                    let nextPoint = embeddedTrajectory[simStepIndex + 1];
+                    let computedStepIncrement = (parseFloat(document.getElementById('sld-speed').value) / 100) * 0.04;
+
+                    interpolationFraction += computedStepIncrement;
+                    if(interpolationFraction >= 1.0) {
+                        interpolationFraction = 0; simStepIndex++;
+                        if (simStepIndex >= embeddedTrajectory.length - 1) { runSimulation = false; simStepIndex = 0; }
+                    }
+
+                    let blendedTransforms = [];
+                    for(let i=0; i<7; i++) {
+                        let blendedPos = new THREE.Vector3().lerpVectors(new THREE.Vector3().fromArray(currentPoint.transforms[i].pos), new THREE.Vector3().fromArray(nextPoint.transforms[i].pos), interpolationFraction).toArray();
+                        let blendedQuat = new THREE.Quaternion().fromArray(currentPoint.transforms[i].quat).slerp(new THREE.Quaternion().fromArray(nextPoint.transforms[i].quat), interpolationFraction).toArray();
+                        blendedTransforms.push({ "pos": blendedPos, "quat": blendedQuat });
+                    }
+                    localJointAngles = [...currentPoint.angles]; 
+                    updateSceneTransforms(blendedTransforms, data.toolOffsetX, data.toolOffsetY, data.toolOffsetZ, data.toolRotX, data.toolRotY, data.toolRotZ, data.jigX, data.jigY, data.jigZ, ((1 - interpolationFraction) * currentPoint.angles[7] + interpolationFraction * nextPoint.angles[7]));
+                } else {
+                    document.getElementById('jog-pendant').style.opacity = "1.0";
+                    if(activeJogMode === "gesture") {
+                        document.getElementById('status').innerText = "Status: Gesture Control Active (Move Hand)";
+                    } else {
+                        document.getElementById('status').innerText = "Status: Online (WebGL Ready)";
+                    }
+                }
+                renderer.render(scene, camera);
+            }
+
+            function updateSceneTransforms(transforms, ox, oy, oz, rx, ry, rz, jigX, jigY, jigZ, e1RotAngle) {
+                for(let i=0; i<7; i++) {
+                    if(links[i] && transforms[i]) { links[i].position.fromArray(transforms[i].pos); links[i].quaternion.fromArray(transforms[i].quat); }
+                }
+                if(links[6]) {
+                    links[6].updateMatrixWorld(); gunMesh.position.copy(links[6].position); gunMesh.quaternion.copy(links[6].quaternion);
+                    gunMesh.translateX(ox); gunMesh.translateY(oy); gunMesh.translateZ(oz);
+                    toolAdjustmentGroup.rotation.set(rx, ry, rz, 'XYZ');
+                    
+                    tcpAnchorPivot.position.copy(links[6].position);
+                    tcpAnchorPivot.quaternion.copy(links[6].quaternion);
+                    transformGizmo.updateMatrixWorld();
+                }
+                jigMesh.position.set(jigX, jigY, jigZ); internalJigContent.rotation.z = e1RotAngle;
+            }
+
+            window.addEventListener('resize', () => {
+                camera.aspect = container.clientWidth / container.clientHeight; camera.updateProjectionMatrix();
+                renderer.setSize(container.clientWidth, container.clientHeight);
+            });
+
+            // --- GESTURE PROCESSING ENGINE (MEDIAPIPE) ---
+            let mpHands = null;
+            let mpCamera = null;
+            let anchorTCPPos = new THREE.Vector3();
+
+            function onHandResults(results) {
+                if (activeJogMode !== "gesture" || runSimulation) return;
+                
+                if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                    // Landmark 9 is the middle finger MCP joint (represents central palm)
+                    const palm = results.multiHandLandmarks[0][9];
+                    
+                    // Map 0 -> 1 normalized tracking space to absolute 3D Cartesian bounds
+                    // X-axis mapping (Left-Right hand movement corresponds to Y workspace)
+                    let targetY = -(palm.x - 0.5) * 2.5; 
+                    // Y-axis mapping (Up-Down hand movement corresponds to Z workspace)
+                    let targetZ = (1.0 - palm.y) * 2.0; 
+                    // Z-axis mapping (Palm Depth / Proximity corresponds to X workspace)
+                    let targetX = 0.5 + (1.0 - palm.z) * 1.5; 
+
+                    anchorTCPPos.set(targetX, targetY, targetZ);
+                    
+                    // Smooth tracking filter
+                    tcpAnchorPivot.position.lerp(anchorTCPPos, 0.15);
+                    executeCyclicInverseKinematics(tcpAnchorPivot.position);
+                }
+            }
+
+            function startWebcam() {
+                if (!mpHands) {
+                    mpHands = new Hands({
+                        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+                    });
+                    mpHands.setOptions({
+                        maxNumHands: 1,
+                        modelComplexity: 1,
+                        minDetectionConfidence: 0.6,
+                        minTrackingConfidence: 0.6
+                    });
+                    mpHands.onResults(onHandResults);
+                }
+
+                if (!mpCamera) {
+                    mpCamera = new Camera(videoElement, {
+                        onFrame: async () => {
+                            if (activeJogMode === "gesture") {
+                                await mpHands.send({ image: videoElement });
+                            }
+                        },
+                        width: 320,
+                        height: 240
+                    });
+                }
+                mpCamera.start().catch(err => {
+                    alert("Camera access denied or unavailable: " + err);
+                });
+            }
+
+            function stopWebcam() {
+                if (mpCamera) {
+                    mpCamera.stop();
+                    mpCamera = null;
+                }
+            }
+
+            refreshSceneDisplay(true); updateUIElements(); animate();
+        </script>
+    </body>
+    </html>
+    """.replace("__PAYLOAD_OBJECT__", json_stream)
+    
+    components.html(html_source, height=750, scrolling=False)
+
+# --- 8. DYNAMIC HARDWARE FILE BINDING LAYER ---
+path_jig = os.path.join(TEMP_DIR, "jig.stl")
+
+link_b64s = []
+for i in range(7):
+    mesh_filename = f"link_{i}.stl" if i > 0 else "base_link.stl"
+    target_mesh_path = os.path.join(BASE_DIR, "assets", "robots", selected_profile, mesh_filename)
+    if not os.path.exists(target_mesh_path):
+        target_mesh_path = os.path.join(BASE_DIR, "assets", "meshes", mesh_filename)
+    link_b64s.append(get_file_base64_cached(target_mesh_path))
+
+tooling_b64 = ""
+if selected_tool_path and os.path.exists(selected_tool_path):
+    tooling_b64 = get_file_base64_cached(selected_tool_path, get_file_hash(selected_tool_path))
+
+scene_payload = {
+    "profileName": selected_profile,
+    "trajectory": st.session_state.program,
+    "initialAngles": st.session_state.j_angles,
+    "linkGeometries": link_b64s,
+    "fallbackHeights": active_cfg["fallback_heights"],
+    "dhConfig": active_cfg["links"],
+    "jointLimits": active_cfg["limits"],
+    "gunData": tooling_b64,
+    "jigData": get_file_base64_cached(path_jig, get_file_hash(path_jig)),
+    "toolOffsetX": t_off_x,
+    "toolOffsetY": t_off_y,
+    "toolOffsetZ": t_off_z,
+    "toolRotX": float(t_rot_x) * (np.pi / 180.0),
+    "toolRotY": float(t_rot_y) * (np.pi / 180.0),
+    "toolRotZ": float(t_rot_z) * (np.pi / 180.0),
+    "jigX": jx_pos,
+    "jigY": jy_pos,
+    "jigZ": jz_pos,
+    "rotX": float(j_rot_x) * (np.pi / 180.0),
+    "rotY": float(j_rot_y) * (np.pi / 180.0),
+    "jigScale": js_scale
+}
+
+build_embedded_viewport(scene_payload)
